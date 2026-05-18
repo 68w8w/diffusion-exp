@@ -300,6 +300,10 @@ def train(config: Config):
 
             log_data.append(log_entry)
 
+            # Write to file immediately (防中断丢数据)
+            with open(os.path.join(config.output_dir, 'train_log.json'), 'w') as f:
+                json.dump(log_data, f, indent=2)
+
             div_str = " | ".join(
                 [f"div_{h}={divergences.get(h, 0):.4f}" for h in range(1, K)])
             head_loss_str = " | ".join(
