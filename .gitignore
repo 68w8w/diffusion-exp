@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+outputs/
+memory/
+*.pt
+*.pth
+data_cache/
