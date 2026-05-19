@@ -58,7 +58,7 @@ def absorbing_reverse_step(
         t_next = torch.full((z.shape[0],), t_next, device=z.device)
 
     t_curr = t_curr.clamp(min=eps)
-    t_next = t_next.clamp(min=0.0)
+    t_next = t_next.clamp(min=0.0)  # upstream already clamps to eps; this is a safety floor
 
     # move_chance_t ≈ t, move_chance_s ≈ s  (linear schedule: alpha_t = 1 - t)
     move_chance_t = t_curr[:, None, None]  # [B, 1, 1]

@@ -6,6 +6,7 @@ Implements:
 - T_outer sweep diagnostics
 """
 
+import math
 import os
 import json
 import torch
@@ -142,8 +143,6 @@ def compute_mauve(
     )
     return result.mauve
 
-
-import math
 
 
 def evaluate_model(config: Config, checkpoint_path: str = None):
