@@ -1,22 +1,30 @@
-"""Core diffusion utilities: forward noising, absorbing reverse step."""
+"""Core diffusion utilities: forward noising, absorbing reverse step.
+
+Aligned with MDLM original implementation.
+"""
 
 import torch
+
+
+def _sample_categorical(categorical_probs: torch.Tensor) -> torch.Tensor:
+    """Sample from categorical distribution using Gumbel-max trick.
+
+    Exactly matches MDLM's _sample_categorical.
+    """
+    gumbel_norm = (
+        1e-10
+        - (torch.rand_like(categorical_probs) + 1e-10).log())
+    return (categorical_probs / gumbel_norm).argmax(dim=-1)
 
 
 def forward_noise(x0: torch.Tensor, t: torch.Tensor, mask_token_id: int) -> torch.Tensor:
     """Forward noising: replace each token with MASK with probability t.
 
-    Args:
-        x0: [B, L] clean token sequence
-        t: [B] or [B, 1] noise probability per sample
-        mask_token_id: MASK token index
-
-    Returns:
-        z_t: [B, L] noised sequence
+    Matches MDLM's q_xt (for linear schedule where move_chance ≈ t).
     """
     if t.ndim == 1:
         t = t[:, None]  # [B, 1]
-    move_mask = torch.rand_like(x0.float()) < t  # [B, L]
+    move_mask = torch.rand(*x0.shape, device=x0.device) < t  # [B, L]
     z_t = torch.where(move_mask, mask_token_id, x0)
     return z_t
 
@@ -29,23 +37,20 @@ def absorbing_reverse_step(
     mask_token_id: int,
     eps: float = 1e-5,
 ) -> torch.Tensor:
-    """Absorbing reverse step: unmask positions from z.
+    """Absorbing reverse step, aligned with MDLM's _ddpm_caching_update.
 
-    For each MASK position:
-      - With probability s/t: stay MASK
-      - With probability (t-s)/t: sample a token from softmax(log_p)
-    Non-MASK positions carry over unchanged.
+    Constructs a joint categorical distribution over {all tokens, MASK} where:
+      - prob(token v) = p_x0(v) * (t - s)     (unmask to v)
+      - prob(MASK)    = s                       (stay masked)
+    Then samples from this distribution. Non-MASK positions carry over.
 
     Args:
-        z: [B, L] current sequence (with MASK tokens)
+        z: [B, L] current sequence
         log_p: [B, L, V] log-probabilities (log_softmax'd, MASK col = -inf)
-        t_curr: [B] or scalar, current time
-        t_next: [B] or scalar, target time (< t_curr)
+        t_curr: [B] or scalar, current time (= t)
+        t_next: [B] or scalar, target time (= s, s < t)
         mask_token_id: MASK token index
-        eps: numerical floor for division
-
-    Returns:
-        z_new: [B, L] updated sequence
+        eps: numerical floor
     """
     if isinstance(t_curr, (int, float)):
         t_curr = torch.full((z.shape[0],), t_curr, device=z.device)
@@ -55,25 +60,20 @@ def absorbing_reverse_step(
     t_curr = t_curr.clamp(min=eps)
     t_next = t_next.clamp(min=0.0)
 
-    # Probability of staying masked: s/t
-    stay_prob = (t_next / t_curr)[:, None]  # [B, 1]
-    # Probability of unmasking: (t-s)/t
-    unmask_prob = 1.0 - stay_prob  # [B, 1]
+    # move_chance_t ≈ t, move_chance_s ≈ s  (linear schedule: alpha_t = 1 - t)
+    move_chance_t = t_curr[:, None, None]  # [B, 1, 1]
+    move_chance_s = t_next[:, None, None]  # [B, 1, 1]
 
-    # Positions that are currently MASK
-    is_mask = (z == mask_token_id)  # [B, L]
+    # p_x0: [B, L, V] probabilities
+    p_x0 = log_p.exp()
 
-    # Sample tokens using Gumbel-max trick (equivalent to Categorical sampling)
-    probs = log_p.exp()  # [B, L, V]; MASK col = 0 because log_p MASK = -inf
-    gumbel_noise = -torch.log(-torch.log(torch.rand_like(probs) + 1e-10) + 1e-10)
-    sampled_tokens = (probs / (gumbel_noise + 1e-10)).argmax(dim=-1)  # [B, L]
+    # Joint categorical: unmask probs + stay-as-MASK prob
+    q_xs = p_x0 * (move_chance_t - move_chance_s)
+    q_xs[:, :, mask_token_id] = move_chance_s[:, :, 0]
 
-    # Decide which MASK positions to unmask
-    unmask_decision = torch.rand(z.shape, device=z.device) < unmask_prob  # [B, L]
-    should_unmask = is_mask & unmask_decision
+    # Sample from joint distribution (Gumbel-max)
+    _x = _sample_categorical(q_xs)
 
-    # Build result: carry over non-MASK, optionally unmask MASK positions
-    z_new = z.clone()
-    z_new[should_unmask] = sampled_tokens[should_unmask]
-
-    return z_new
+    # Non-MASK positions carry over
+    copy_flag = (z != mask_token_id).to(z.dtype)
+    return (copy_flag * z + (1 - copy_flag) * _x).long()

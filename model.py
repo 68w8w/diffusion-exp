@@ -267,25 +267,17 @@ class MultiHeadStudent(nn.Module):
 # ======================================================================
 
 class Teacher(nn.Module):
-    """Frozen teacher: reuses the student's backbone (no LoRA) for memory efficiency.
-
-    Since the student's backbone is frozen and identical to the teacher's,
-    we forward through the HF model's backbone directly (which does NOT
-    include the student's LoRA). This avoids loading two copies of the model.
-    """
+    """Frozen teacher: independently loaded MDLM checkpoint, eval mode."""
 
     def __init__(self, config: Config, hf_model):
-        """
-        Args:
-            config: Config
-            hf_model: the MDLM HuggingFace model (can be the same instance as student's)
-        """
         super().__init__()
         self.config = config
         self.hf_model = hf_model
         self.mask_token_id = config.mask_token_id
         self.neg_infinity = config.neg_infinity
-        # Note: params are already frozen by the student's __init__ if shared
+        for p in self.hf_model.parameters():
+            p.requires_grad = False
+        self.hf_model.eval()
 
     @torch.no_grad()
     def forward_log_probs(self, z: torch.Tensor, t) -> torch.Tensor:
